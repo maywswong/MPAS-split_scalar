@@ -1411,7 +1411,7 @@ module init_atm_cases
       real (kind=RKIND), pointer :: sphere_radius
 
       real (kind=RKIND), dimension(:,:), pointer :: t_init, w, rw, v, rho, theta
-      real (kind=RKIND), dimension(:), pointer :: u_init, qv_init, angleEdge, fEdge, fVertex
+      real (kind=RKIND), dimension(:), pointer :: u_init, v_init, qv_init, angleEdge, fEdge, fVertex
 
       character (len=StrKIND), pointer :: config_interface_projection
 
@@ -1439,7 +1439,7 @@ module init_atm_cases
       ! Scale all distances
       !
 
-      a_scale = 1.0
+      a_scale = 6.0
 
       xCell(:) = xCell(:) * a_scale
       yCell(:) = yCell(:) * a_scale
@@ -1483,6 +1483,7 @@ module init_atm_cases
       call mpas_pool_get_array(mesh, 'dss', dss)
       call mpas_pool_get_array(mesh, 't_init', t_init)
       call mpas_pool_get_array(mesh, 'u_init', u_init)
+      call mpas_pool_get_array(mesh, 'v_init', v_init)
       call mpas_pool_get_array(mesh, 'qv_init', qv_init)
       call mpas_pool_get_array(mesh, 'angleEdge', angleEdge)
       call mpas_pool_get_array(mesh, 'fEdge', fEdge)
@@ -1701,12 +1702,24 @@ module init_atm_cases
                   u(k,i) = um
                end if
                if(i == 1 ) u_init(k) = u(k,i) - us
-               u(k,i) = cos(angleEdge(i)) * (u(k,i) - us)
+
+               if ( test_case == 3 ) then
+                    u(k,i) = cos(angleEdge(i)) * (u(k,i) - us)
+               elseif ( test_case == 4 ) then
+                   ! 2D squall line uses mtn_wave grid
+                   ! - swapping u and v winds to be consistent with the mtn_wave grid
+                    u(k,i)    = sin(angleEdge(i)) * (u(k,i) - us)
+                    if ( i == 1 ) then
+                       v_init(k) = u_init(k) 
+                       u_init(k) = 0.0_RKIND
+                    end if
+               end if
             end do
             end if
          end do
 
          call mpas_dmpar_bcast_reals(dminfo, nz1, u_init)
+         call mpas_dmpar_bcast_reals(dminfo, nz1, v_init)
 
 !
 !    for reference sounding 
