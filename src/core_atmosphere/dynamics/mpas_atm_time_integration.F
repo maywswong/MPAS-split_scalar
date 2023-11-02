@@ -68,7 +68,8 @@ module atm_time_integration
    real (kind=RKIND), dimension(:,:), allocatable :: flux_upwind_tmp_arr
    real (kind=RKIND), dimension(:,:), allocatable :: flux_tmp_arr
    real (kind=RKIND), dimension(:,:), allocatable :: wdtn_arr
-   real (kind=RKIND), dimension(:,:), allocatable :: rho_zz_int
+   !MW real (kind=RKIND), dimension(:,:), allocatable :: rho_zz_int
+   real (kind=RKIND), dimension(:,:), pointer :: rho_zz_int ! MW: experimental scalar debug
 
    real (kind=RKIND), dimension(:,:,:), allocatable :: scalars_driving ! regional_MPAS addition 
    real (kind=RKIND), dimension(:,:), allocatable :: ru_driving_tend ! regional_MPAS addition 
@@ -375,6 +376,8 @@ module atm_time_integration
 
       real (kind=RKIND), dimension(:,:), pointer :: rqvdynten, rthdynten, theta_m
       real (kind=RKIND) :: theta_local, fac_m
+
+      real (kind=RKIND), dimension(:,:), pointer :: rho_zz_diag, rho_zz_diag_save, rho_zz_1   ! experimental split-vertical/horizontal scalar transport
 
 #ifndef MPAS_CAM_DYCORE
       ! Used in allocating scratch fields for physics tendencies
@@ -1033,6 +1036,65 @@ module atm_time_integration
 #endif
 
 
+      ! ..................................................................................
+      !  EXPERIMENTAL STRANG-SPLITTING SCALAR TRANSPORT (Created: 10/10/2023; Last updated: 10/19/2023)
+      !
+      ! if ( config_split_scalar_advection .and. config_split_dynamics_transport ) then
+      !    (1) dt/2          --> vertical
+      !    (2) RK3 (over dt) --> horizontal
+      !    (3) dt/2          --> vertical
+      !
+      !
+
+      ! Initializing rho_zz_diag_save 
+      ! This is only needed for testing the experimental schemes  - computed in parallel with the original scalar
+      ! transport scheme. 
+      !
+!$OMP PARALLEL DO
+      do thread=1,nThreads
+          call atm_initialize_split_scalars(state, diag, mesh, cellSolveThreadStart(thread), cellSolveThreadEnd(thread))
+      end do
+!$OMP END PARALLEL DO
+
+      !(1) dt/2 - vertical transport
+!$OMP PARALLEL DO
+      do thread=1,nThreads
+          call atm_advance_vsplit_scalars('rho_zz_diag', state, diag, mesh, dt/2, &
+                                       cellSolveThreadStart(thread), cellSolveThreadEnd(thread)) 
+      end do
+!$OMP END PARALLEL DO
+
+      !(2) RK3 over dt - horizontal transport
+      rk_timestep(1) = dt/3.
+      rk_timestep(2) = dt/2.
+      rk_timestep(3) = dt
+
+      RK3_HVSPLIT : do rk_step = 1, 3 ! Runge-Kutta loop
+!$OMP PARALLEL DO
+          do thread=1,nThreads
+             call atm_advance_hsplit_scalars('rho_zz_diag', state, diag, mesh, rk_step, rk_timestep(rk_step), &
+                                cellSolveThreadStart(thread), cellSolveThreadEnd(thread))
+
+          end do
+!$OMP END PARALLEL DO
+          if (rk_step < 3) then
+               call exchange_halo_group(domain, 'dynamics:rho_zz_diag,rho_zz_diag_save')
+          end if
+      end do RK3_HVSPLIT
+
+      !!(3) dt/2 - vertical transport
+!$OMP PARALLEL DO
+      do thread=1,nThreads
+          call atm_advance_vsplit_scalars('rho_zz_diag', state, diag, mesh, dt/2., &
+                                       cellSolveThreadStart(thread), cellSolveThreadEnd(thread)) 
+      end do
+!$OMP END PARALLEL DO
+
+
+      ! endif
+      ! ..................................................................................
+
+
       !
       !  split transport, at present RK3
       !
@@ -1367,8 +1429,9 @@ module atm_time_integration
       allocate(wdtn_arr(nVertLevels+1,nCells+1))
       wdtn_arr(:,nCells+1) = 0.0_RKIND
       if (config_split_dynamics_transport) then
-         allocate(rho_zz_int(nVertLevels,nCells+1))
-         rho_zz_int(:,nCells+1) = 0.0_RKIND
+         call mpas_pool_get_array(diag, 'rho_zz_int', rho_zz_int )
+         !allocate(rho_zz_int(nVertLevels,nCells+1))
+         !rho_zz_int(:,nCells+1) = 0.0_RKIND
       else
          allocate(rho_zz_int(1,1))
       end if
@@ -1415,7 +1478,7 @@ module atm_time_integration
       deallocate(s_min_arr)
       deallocate(flux_array)
       deallocate(wdtn_arr)
-      deallocate(rho_zz_int)
+      !MW deallocate(rho_zz_int)
 
       if (rk_step < 3 .or. (.not. config_monotonic .and. .not. config_positive_definite)) then
          deallocate(horiz_flux_array)
@@ -1431,6 +1494,284 @@ module atm_time_integration
       end if
 
    end subroutine advance_scalars
+
+
+   !-----------------------------------------------------------------------
+   !  routine atm_initialize_split_scalars
+   !
+   !
+   !-----------------------------------------------------------------------
+   subroutine atm_initialize_split_scalars(state, diag, mesh, cellSolveStart, cellSolveEnd ) 
+      implicit none
+
+      ! Arguments
+      type (mpas_pool_type), intent(inout) :: state
+      type (mpas_pool_type), intent(in)    :: diag
+      type (mpas_pool_type), intent(in)    :: mesh
+      integer, intent(in) :: cellSolveStart, cellSolveEnd
+
+      ! Local variables
+      real (kind=RKIND), dimension(:,:), pointer :: rho_zz_diag_old
+      real (kind=RKIND), dimension(:,:), pointer :: rho_zz_1
+
+      integer, pointer :: nCells
+
+
+      call mpas_pool_get_dimension(mesh, 'nCells', nCells)
+      call mpas_pool_get_array(diag, 'rho_zz_diag_save', rho_zz_diag_old)
+      call mpas_pool_get_array(state, 'rho_zz'     , rho_zz_1  ,1)
+
+      call atm_initialize_split_scalars_work( nCells, cellSolveStart, cellSolveEnd, rho_zz_diag_old, rho_zz_1 ) 
+
+
+   end subroutine atm_initialize_split_scalars
+
+
+   subroutine atm_initialize_split_scalars_work(nCells, cellSolveStart, cellSolveEnd, &
+                                   rho_zz_diag_old, rho_zz_1 ) 
+
+      use mpas_atm_dimensions, only : nVertLevels
+
+      implicit none
+
+      integer, intent(in)                  :: nCells           ! for allocating stack variables
+      integer, intent(in) :: cellSolveStart, cellSolveEnd
+      real (kind=RKIND), dimension(nVertLevels,nCells+1), intent(inout)   :: rho_zz_diag_old  ! to be updated rho_zz_diag
+      real (kind=RKIND), dimension(nVertLevels,nCells+1), intent(inout)   :: rho_zz_1
+
+      integer :: i, iCell, k
+
+      do iCell=cellSolveStart,cellSolveEnd
+!DIR$ IVDEP
+               do k=1,nVertLevels
+                  rho_zz_diag_old(k,iCell) = rho_zz_1(k,iCell) 
+               end do
+      end do
+
+   end subroutine atm_initialize_split_scalars_work 
+
+
+
+
+   !-----------------------------------------------------------------------
+   !  routine atm_advance_vsplit_scalars
+   !
+   !> \brief Advances the density field in the vertical component over 
+   !>        the splitdt (typically 0.5*dt) 
+   !> \date 10 October 2023
+   !> \details
+   !>  *** THIS IS EXPERIMENTAL CODE *** 
+   !>   Currently only advances the diagnostics dry density (rho_zz_diag)
+   !>   This routine is a wrapper for atm_advance_vsplit_scalars_work and
+   !>   is intended to allow pointers to fields to be deferenced through the call
+   !>   to the work routine.
+   !
+   !-----------------------------------------------------------------------
+   subroutine atm_advance_vsplit_scalars(field_name, state, diag, mesh, splitdt, &
+                                       cellSolveStart, cellSolveEnd)
+
+      implicit none
+
+      ! Arguments
+      character(len=*), intent(in) :: field_name           ! save this argument for scalars
+      type (mpas_pool_type), intent(inout) :: state
+      type (mpas_pool_type), intent(in)    :: diag
+      type (mpas_pool_type), intent(in)    :: mesh
+      real (kind=RKIND), intent(in)        :: splitdt
+      integer, intent(in) :: cellSolveStart, cellSolveEnd
+
+      ! Local variables
+      real (kind=RKIND), dimension(:,:), pointer :: wwAvg
+      real (kind=RKIND), dimension(:,:), pointer :: rho_zz_diag_old, rho_zz_diag_new
+      real (kind=RKIND), dimension(:,:), pointer :: rho_zz_1
+
+      integer, pointer :: nCells
+
+      real (kind=RKIND), dimension(:), pointer :: rdnw
+
+      call mpas_pool_get_dimension(mesh, 'nCells', nCells)
+      call mpas_pool_get_array(diag, 'wwAvg', wwAvg)
+
+      call mpas_pool_get_array(diag, 'rho_zz_diag_save', rho_zz_diag_old)
+      call mpas_pool_get_array(diag, 'rho_zz_diag'     , rho_zz_diag_new)
+      call mpas_pool_get_array(state, 'rho_zz'     , rho_zz_1  ,1)
+      call mpas_pool_get_array(mesh, 'rdzw', rdnw)
+
+      call atm_advance_vsplit_scalars_work(nCells, splitdt, &
+                     cellSolveStart, cellSolveEnd, wwAvg, rho_zz_diag_old, rho_zz_diag_new, rho_zz_1, rdnw ) 
+
+
+   end subroutine atm_advance_vsplit_scalars
+
+
+
+   !-----------------------------------------------------------------------
+   !  routine atm_advance_hsplit_scalars
+   !
+   !> \brief Advances the density field in the horizontal component over 
+   !>        the splitdt (rk timestep) 
+   !> \date 11 October 2023
+   !> \details
+   !>  *** THIS IS EXPERIMENTAL CODE *** 
+   !>   Currently only advances the diagnostics dry density (rho_zz_diag)
+   !>   This routine is a wrapper for atm_advance_hsplit_scalars_work and
+   !>   is intended to allow pointers to fields to be deferenced through the call
+   !>   to the work routine.
+   !
+   !-----------------------------------------------------------------------
+   subroutine atm_advance_hsplit_scalars(field_name, state, diag, mesh, rk_step, splitdt, &
+                                       cellSolveStart, cellSolveEnd)
+
+      implicit none
+
+      ! Arguments
+      character(len=*), intent(in) :: field_name           ! save this argument for scalars
+      type (mpas_pool_type), intent(inout) :: state
+      type (mpas_pool_type), intent(inout) :: diag
+      type (mpas_pool_type), intent(in)    :: mesh
+      real (kind=RKIND), intent(in)        :: splitdt
+      integer, intent(in) :: rk_step
+      integer, intent(in) :: cellSolveStart, cellSolveEnd
+
+      ! Local variables
+      real (kind=RKIND), dimension(:,:), pointer :: uhAvg
+      real (kind=RKIND), dimension(:,:), pointer :: rho_zz_diag_old
+      real (kind=RKIND), dimension(:,:), pointer :: rho_zz_diag_new
+
+      integer, pointer :: nCells, nEdges
+
+      real (kind=RKIND), dimension(:), pointer :: invAreaCell
+      real (kind=RKIND), dimension(:), pointer :: dvEdge
+      real (kind=RKIND), dimension(:,:), pointer :: edgesOnCell_sign
+      integer, dimension(:,:), pointer         :: edgesOnCell
+      integer, dimension(:), pointer           :: nEdgesOnCell
+
+      call mpas_pool_get_dimension(mesh, 'nCells', nCells)
+      call mpas_pool_get_dimension(mesh, 'nEdges', nEdges)
+      call mpas_pool_get_array(mesh, 'invAreaCell', invAreaCell)
+      call mpas_pool_get_array(mesh, 'dvEdge', dvEdge)
+      call mpas_pool_get_array(mesh, 'edgesOnCell', edgesOnCell)
+      call mpas_pool_get_array(mesh, 'edgesOnCell_sign', edgesOnCell_sign)
+      call mpas_pool_get_array(mesh, 'nEdgesOnCell', nEdgesOnCell)
+
+      call mpas_pool_get_array(diag, 'ruAvg', uhAvg)
+      call mpas_pool_get_array(diag, 'rho_zz_diag_save', rho_zz_diag_old)   ! note: this has been updated from values at time-level t from vertical split step 
+      call mpas_pool_get_array(diag, 'rho_zz_diag'     , rho_zz_diag_new)
+
+      call atm_advance_hsplit_scalars_work(nCells, nEdges, rk_step, splitdt, cellSolveStart, cellSolveEnd, &
+                                   uhAvg, invAreaCell, dvEdge, edgesOnCell, edgesOnCell_sign, nEdgesOnCell, & 
+                                   rho_zz_diag_old, rho_zz_diag_new ) 
+
+
+   end subroutine atm_advance_hsplit_scalars
+
+
+
+   !-----------------------------------------------------------------------
+   !  routine atm_advance_hsplit_scalars_work
+   !
+   !> \brief Advances density BUT ONLY the split horizontal component 
+   !> \date 11 October 2023 
+   !> \details
+   !>  *** THIS IS EXPERIMENTAL CODE ***
+   !>    currently only integrates the density equation
+   !
+   !-----------------------------------------------------------------------
+   subroutine atm_advance_hsplit_scalars_work(nCells, nEdges, rk_step, dt, cellSolveStart, cellSolveEnd, &
+                                   uhAvg, invAreaCell, dvEdge, edgesOnCell, edgesOnCell_sign, nEdgesOnCell, & 
+                                   rho_zz_diag_old, rho_zz_diag_new ) 
+
+      use mpas_atm_dimensions, only : nVertLevels
+
+      implicit none
+
+      integer, intent(in)                  :: nCells           ! for allocating stack variables
+      integer, intent(in)                  :: nEdges           ! for allocating stack variables
+      real (kind=RKIND), intent(in)        :: dt
+      integer, intent(in) :: rk_step
+      integer, intent(in) :: cellSolveStart, cellSolveEnd
+      real (kind=RKIND), dimension(nVertLevels,nCells+1), intent(inout)   :: rho_zz_diag_old  ! to be updated rho_zz_diag
+      real (kind=RKIND), dimension(nVertLevels,nCells+1), intent(inout)  :: rho_zz_diag_new  ! updated  rho_zz_diag
+
+      integer :: i, iCell, iEdge, k
+
+      real (kind=RKIND), dimension(nVertLevels,nEdges+1), intent(in) :: uhAvg
+      real (kind=RKIND), dimension(:), intent(in) :: dvEdge, invAreaCell
+      real (kind=RKIND), dimension(:,:), intent(in) :: edgesOnCell_sign
+      integer, dimension(:,:), intent(in) :: edgesOnCell
+      integer, dimension(:), intent(in) :: nEdgesOnCell
+
+      real (kind=RKIND), dimension(nVertLevels,nCells+1) :: rho_zz_local   ! local variable
+
+
+      do iCell=cellSolveStart,cellSolveEnd
+            rho_zz_local(:,iCell) = 0.0
+            do i=1,nEdgesOnCell(iCell)
+               iEdge = edgesOnCell(i,iCell)
+!DIR$ IVDEP
+               do k=1,nVertLevels
+                  rho_zz_local(k,iCell) = rho_zz_local(k,iCell) - edgesOnCell_sign(i,iCell) * uhAvg(k,iEdge) * dvEdge(iEdge) * invAreaCell(iCell)
+               end do
+            end do
+
+!DIR$ IVDEP
+            do k=1,nVertLevels
+               rho_zz_diag_new(k,iCell) = rho_zz_diag_old(k,iCell) + dt * rho_zz_local(k,iCell)
+            end do
+      end do
+
+      if (rk_step == 3) then
+            do iCell=cellSolveStart,cellSolveEnd
+!DIR$ IVDEP
+                   do k = 1, nVertLevels
+                       rho_zz_diag_old(k,iCell) = rho_zz_diag_new(k,iCell)  ! update rho_zz_diag_save to be used for other splitting steps 
+                   end do 
+            end do 
+      end if
+
+
+   end subroutine atm_advance_hsplit_scalars_work 
+
+
+
+
+   !-----------------------------------------------------------------------
+   !  routine atm_advance_vsplit_scalars_work
+   !
+   !> \brief Advances density BUT ONLY the split vertical component 
+   !> \date 11 October 2023 
+   !> \details
+   !>  *** THIS IS EXPERIMENTAL CODE ***
+   !>    currently only integrates the density equation
+   !
+   !-----------------------------------------------------------------------
+   subroutine atm_advance_vsplit_scalars_work( nCells, dt, &
+                                   cellSolveStart, cellSolveEnd, wwAvg, rho_zz_old, rho_zz_new, rho_zz_1, rdnw )
+
+      use mpas_atm_dimensions, only : nVertLevels
+
+      implicit none
+      integer, intent(in)                  :: nCells           ! for allocating stack variables
+      real (kind=RKIND), intent(in)        :: dt	       ! time-step over which to integrate the split vertical transport
+      integer, intent(in) :: cellSolveStart, cellSolveEnd
+      real (kind=RKIND), dimension(nVertLevels+1,nCells+1), intent(in) :: wwAvg
+      real (kind=RKIND), dimension(nVertLevels,nCells+1), intent(inout) :: rho_zz_old, rho_zz_new
+      real (kind=RKIND), dimension(nVertLevels,nCells+1), intent(in) :: rho_zz_1
+      real (kind=RKIND), dimension(nVertLevels), intent(in) :: rdnw
+
+      integer :: iCell, k
+
+      do iCell=cellSolveStart,cellSolveEnd
+!DIR$ IVDEP
+            do k=1,nVertLevels
+               rho_zz_new(k,iCell) = rho_zz_old(k,iCell) - dt*( rdnw(k)*(wwAvg(k+1,iCell)-wwAvg(k,iCell)) )
+               rho_zz_old(k,iCell) = rho_zz_new(k,iCell)   ! also update "rho_zz_diag_save" with new values
+            end do
+      end do
+!$OMP BARRIER
+
+   end subroutine atm_advance_vsplit_scalars_work
+
 
 
    subroutine atm_rk_integration_setup( state, diag, &

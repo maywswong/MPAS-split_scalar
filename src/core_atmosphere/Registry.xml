@@ -1709,6 +1709,15 @@
                 <var name="rho_zz_old_split" type="real" dimensions="nVertLevels nCells Time" units="kg m^{-3}"
                      description="rho/zz"/>
 
+		<var name="rho_zz_int" type="real" dimensions="nVertLevels nCells Time" units="kg m^{-3}"
+                     description="Diagnostic dry air density divided by d(zeta)/dz - experimental split-scalar transport"/>
+
+		<var name="rho_zz_diag" type="real" dimensions="nVertLevels nCells Time" units="kg m^{-3}"
+                     description="Diagnostic dry air density divided by d(zeta)/dz - experimental split-scalar transport"/>
+
+		<var name="rho_zz_diag_save" type="real" dimensions="nVertLevels nCells Time" units="kg m^{-3}"
+                     description="Diagnostic dry air density divided by d(zeta)/dz - experimental split-scalar transport"/>
+
                 <var name="ruAvg" type="real" dimensions="nVertLevels nEdges Time" units="kg m^{-2} s^{-1}"
                      description="time-averaged rho*u/zz used in scalar transport"/>
 

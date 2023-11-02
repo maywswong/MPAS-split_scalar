@@ -892,6 +892,7 @@ module atm_core
       real (kind=RKIND), dimension(:,:), pointer :: pressure_base, pressure_p, pressure
       real (kind=RKIND), dimension(:,:,:), pointer :: scalars
 
+
       call mpas_pool_get_dimension(mesh, 'nCells', nCells)
       call mpas_pool_get_dimension(mesh, 'nVertLevels', nVertLevels)
       call mpas_pool_get_dimension(state, 'index_qv', index_qv)
@@ -1736,6 +1737,14 @@ module atm_core
          call mpas_halo_exch_group_add_field(domain, 'dynamics:scale', 'scale', timeLevel=1, haloLayers=(/1,2/))
          call mpas_halo_exch_group_complete(domain, 'dynamics:scale')
 
+         ! for experimental split-vertical-horizontal scalar transport
+         call mpas_halo_exch_group_create(domain, 'dynamics:rho_zz_diag,rho_zz_diag_save')
+         call mpas_halo_exch_group_add_field(domain, 'dynamics:rho_zz_diag,rho_zz_diag', 'rho_zz_diag', timeLevel=1, haloLayers=(/1,2/))
+         call mpas_halo_exch_group_add_field(domain, 'dynamics:rho_zz_diag,rho_zz_diag_save', 'rho_zz_diag_save', timeLevel=1, haloLayers=(/1,2/))
+         call mpas_halo_exch_group_complete(domain, 'dynamics:rho_zz_diag,rho_zz_diag_save')
+
+
+
 #ifdef DO_PHYSICS
          !
          ! Set up halo exchange groups used by physics
@@ -1858,6 +1867,8 @@ module atm_core
          call mpas_halo_exch_group_destroy(domain, 'dynamics:scalars_old')
          call mpas_halo_exch_group_destroy(domain, 'dynamics:w')
          call mpas_halo_exch_group_destroy(domain, 'dynamics:scale')
+
+         call mpas_halo_exch_group_destroy(domain, 'dynamics:rho_zz_diag,rho_zz_diag_save')
 
 #ifdef DO_PHYSICS
          !
