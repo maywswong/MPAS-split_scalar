@@ -107,6 +107,11 @@
                      description="When config_split_dynamics_transport = T, the number of RK steps per transport step"
                      possible_values="Positive integer values"/>
 
+                <nml_option name="config_do_split_scalars" type="logical" default_value="false"
+                     units="-"
+                     description="Whether this run of the model is to use Strang-splitting for the scalar transport" 
+                     possible_values=".true. or .false."/>
+
                 <nml_option name="config_h_mom_eddy_visc2" type="real" default_value="0.0" in_defaults="false"
                      units="m^2 s^{-1}"
                      description="$\nabla^2$ eddy viscosity for horizontal diffusion of momentum"
@@ -1781,6 +1786,42 @@
 
                 <var name="surface_pressure" type="real" dimensions="nCells Time" units="Pa"
                      description="Diagnosed surface pressure"/>
+
+                <!-- saving updated scalars in the split scalar-transport scheme -->
+		<var_array name="scalars_save" type="real" dimensions="nVertLevels nCells Time">
+                        <var name="qv_save" array_group="moist" units="kg kg^{-1}"
+                             description="Water vapor mixing ratio"/>
+
+                        <var name="qc_save" array_group="moist" units="kg kg^{-1}"
+                             description="Cloud water mixing ratio"
+                             packages="bl_mynn_in;bl_ysu_in;cu_tiedtke_in;mp_kessler_in;mp_thompson_in;mp_wsm6_in"/>
+
+                        <var name="qr_save" array_group="moist" units="kg kg^{-1}"
+                             description="Rain water mixing ratio"
+                             packages="mp_kessler_in;mp_thompson_in;mp_wsm6_in"/>
+
+                        <var name="qi_save" array_group="moist" units="kg kg^{-1}"
+                             description="Ice mixing ratio"
+                             packages="bl_mynn_in;bl_ysu_in;cu_tiedtke_in;mp_thompson_in;mp_wsm6_in"/>
+
+                        <var name="qs_save" array_group="moist" units="kg kg^{-1}"
+                             description="Snow mixing ratio"
+                             packages="mp_thompson_in;mp_wsm6_in"/>
+
+                        <var name="qg_save" array_group="moist" units="kg kg^{-1}"
+                             description="Graupel mixing ratio"
+                             packages="mp_thompson_in;mp_wsm6_in"/>
+
+                        <var name="ni_save" array_group="number" units="nb kg^{-1}"
+                             description="Cloud ice number concentration"
+                             packages="bl_mynn_in;mp_thompson_in"/>
+
+                        <var name="nr_save" array_group="number" units="nb kg^{-1}"
+                             description="Rain number concentration"
+                             packages="mp_thompson_in"/>
+                </var_array>
+
+
 
         </var_struct>
 
