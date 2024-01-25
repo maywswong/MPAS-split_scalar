@@ -1600,9 +1600,6 @@ module atm_core
          call mpas_dmpar_exch_group_create(domain, 'dynamics:scalars_old')
          call mpas_dmpar_exch_group_add_field(domain, 'dynamics:scalars_old', 'scalars', timeLevel=1, haloLayers=(/1,2/))
 
-         call mpas_dmpar_exch_group_create(domain, 'dynamics:scalars_save')
-         call mpas_dmpar_exch_group_add_field(domain, 'dynamics:scalars_save', 'scalars_save', timeLevel=1, haloLayers=(/1,2/))
-
          call mpas_dmpar_exch_group_create(domain, 'dynamics:w')
          call mpas_dmpar_exch_group_add_field(domain, 'dynamics:w', 'w', timeLevel=2, haloLayers=(/1,2/))
 
@@ -1732,10 +1729,6 @@ module atm_core
          call mpas_halo_exch_group_add_field(domain, 'dynamics:scalars_old', 'scalars', timeLevel=1, haloLayers=(/1,2/))
          call mpas_halo_exch_group_complete(domain, 'dynamics:scalars_old')
 
-         call mpas_halo_exch_group_create(domain, 'dynamics:scalars_save')
-         call mpas_halo_exch_group_add_field(domain, 'dynamics:scalars_save', 'scalars_save', timeLevel=1, haloLayers=(/1,2/))
-         call mpas_halo_exch_group_complete(domain, 'dynamics:scalars_save')
-
          call mpas_halo_exch_group_create(domain, 'dynamics:w')
          call mpas_halo_exch_group_add_field(domain, 'dynamics:w', 'w', timeLevel=2, haloLayers=(/1,2/))
          call mpas_halo_exch_group_complete(domain, 'dynamics:w')
@@ -1830,7 +1823,6 @@ module atm_core
          call mpas_dmpar_exch_group_destroy(domain, 'dynamics:u_3')
          call mpas_dmpar_exch_group_destroy(domain, 'dynamics:scalars')
          call mpas_dmpar_exch_group_destroy(domain, 'dynamics:scalars_old')
-         call mpas_dmpar_exch_group_destroy(domain, 'dynamics:scalars_save')
          call mpas_dmpar_exch_group_destroy(domain, 'dynamics:w')
          call mpas_dmpar_exch_group_destroy(domain, 'dynamics:scale')
 
@@ -1867,7 +1859,6 @@ module atm_core
          call mpas_halo_exch_group_destroy(domain, 'dynamics:u_3')
          call mpas_halo_exch_group_destroy(domain, 'dynamics:scalars')
          call mpas_halo_exch_group_destroy(domain, 'dynamics:scalars_old')
-         call mpas_halo_exch_group_destroy(domain, 'dynamics:scalars_save')
          call mpas_halo_exch_group_destroy(domain, 'dynamics:w')
          call mpas_halo_exch_group_destroy(domain, 'dynamics:scale')
 

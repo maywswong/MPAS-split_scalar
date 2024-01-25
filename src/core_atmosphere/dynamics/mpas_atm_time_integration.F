@@ -1067,8 +1067,10 @@ module atm_time_integration
 
 
          !  switch for 2nd order time integration for scalar transport
-         if(config_time_integration_order == 2) rk_timestep(1) = dt/2.
-
+         if(config_time_integration_order == 2) then
+              rk_timestep(1)   = dt/2.
+              v_rk_timestep(1) = dt/4.
+         end if
         
          ! ----------------------------------------------------------------------------
          ! update scalars_2 with physics tendencies (scalars_tend) first before any transport takes place 
@@ -1088,7 +1090,7 @@ module atm_time_integration
 
 !$OMP PARALLEL DO
       do thread=1,nThreads
-          call save_updated_split_scalars( state, diag, &
+          call save_updated_split_scalars( state, tend, &
                                        cellThreadStart(thread), cellThreadEnd(thread), exchange_halo_group)
       end do
 !$OMP END PARALLEL DO
@@ -1111,7 +1113,7 @@ module atm_time_integration
 
 !$OMP PARALLEL DO
       do thread=1,nThreads
-	  call save_updated_split_scalars( state, diag, &
+	  call save_updated_split_scalars( state, tend, &
 				       cellThreadStart(thread), cellThreadEnd(thread), exchange_halo_group)
       end do
 !$OMP END PARALLEL DO
@@ -1128,7 +1130,6 @@ module atm_time_integration
 
             if (rk_step < 3) then
                call exchange_halo_group(domain, 'dynamics:scalars')
-               call exchange_halo_group(domain, 'dynamics:scalars_save')
             end if
 
          end do RK3_HSPLIT_TRANSPORT
@@ -1139,7 +1140,7 @@ module atm_time_integration
 	! --------------------------------
 !$OMP PARALLEL DO
       do thread=1,nThreads
-	  call save_updated_split_scalars( state, diag, & 
+	  call save_updated_split_scalars( state, tend, & 
 				       cellThreadStart(thread), cellThreadEnd(thread), exchange_halo_group)
       end do
 !$OMP END PARALLEL DO
@@ -1433,6 +1434,7 @@ module atm_time_integration
 
       type (mpas_pool_type), pointer :: state
       type (mpas_pool_type), pointer :: diag
+      type (mpas_pool_type), pointer :: tend 
       type (mpas_pool_type), pointer :: mesh
       type (mpas_pool_type), pointer :: halo_scratch
 
@@ -1457,6 +1459,7 @@ module atm_time_integration
 
       call mpas_pool_get_subpool(block % structs, 'state', state)
       call mpas_pool_get_subpool(block % structs, 'diag', diag)
+      call mpas_pool_get_subpool(block % structs, 'tend', tend)
       call mpas_pool_get_subpool(block % structs, 'mesh', mesh)
       call mpas_pool_get_subpool(block % structs, 'halo_scratch', halo_scratch)
 
@@ -1510,13 +1513,13 @@ module atm_time_integration
       !$OMP PARALLEL DO
       do thread=1,nThreads
          if (rk_step < 3 .or. (.not. config_monotonic .and. .not. config_positive_definite)) then
-            call atm_advance_hsplit_scalars(field_name, state, diag, mesh, block % configs, rk_timestep(rk_step), &
+            call atm_advance_hsplit_scalars(field_name, state, diag, tend, mesh, block % configs, rk_timestep(rk_step), &
                                      edgeThreadStart(thread), edgeThreadEnd(thread), &
                                      cellSolveThreadStart(thread), cellSolveThreadEnd(thread), &
                                      horiz_flux_array, rk_step, config_time_integration_order, &
                                      advance_density=config_split_dynamics_transport)
          else
-            call atm_advance_hsplit_scalars_mono(field_name, block, state, diag, mesh, halo_scratch, &
+            call atm_advance_hsplit_scalars_mono(field_name, block, state, diag, tend, mesh, halo_scratch, &
                                           block % configs, rk_timestep(rk_step), &
                                           cellThreadStart(thread), cellThreadEnd(thread), &
                                           edgeThreadStart(thread), edgeThreadEnd(thread), &
@@ -1602,6 +1605,7 @@ module atm_time_integration
 
       type (mpas_pool_type), pointer :: state
       type (mpas_pool_type), pointer :: diag
+      type (mpas_pool_type), pointer :: tend 
       type (mpas_pool_type), pointer :: mesh
 
       integer, pointer :: nCells
@@ -1615,6 +1619,7 @@ module atm_time_integration
 
       call mpas_pool_get_subpool(block % structs, 'state', state)
       call mpas_pool_get_subpool(block % structs, 'diag', diag)
+      call mpas_pool_get_subpool(block % structs, 'tend', tend)
       call mpas_pool_get_subpool(block % structs, 'mesh', mesh)
 
       call mpas_pool_get_dimension(mesh, 'nCells', nCells)
@@ -1622,32 +1627,13 @@ module atm_time_integration
       call mpas_pool_get_dimension(state, 'num_scalars', num_scalars)
 
 
-      !
-      ! Note: The advance_scalars_mono routine can be used without limiting, and thus, encompasses 
-      !       the functionality of the advance_scalars routine; however, it is noticeably slower, 
-      !       so we use the advance_scalars routine for the first two RK substeps.
-      !
-      !do rk_step = 1, 3
-
-      !   if (rk_step < 3 .or. (.not. config_monotonic .and. .not. config_positive_definite)) then
-            call mpas_timer_start('atm_advance_vsplit_scalars')
-            call atm_advance_vsplit_scalars(field_name, state, diag, mesh, block % configs, rk_timestep, &
-                                     cellSolveStart, cellSolveEnd, & 
-				     config_monotonic, config_positive_definite, &
-                                     config_time_integration_order, &
-                                     advance_density=config_split_dynamics_transport)
-            call mpas_timer_stop('atm_advance_vsplit_scalars')
-	! else
-        !    call mpas_timer_start('atm_advance_vsplit_scalars_mono')
-        !    call atm_advance_vsplit_scalars_mono(field_name, state, diag, mesh, & 
-        !                                  block % configs, rk_timestep(rk_step), &
-        !                                  cellSolveStart, cellSolveEnd, & 
-        !                                  advance_density=config_split_dynamics_transport)
-        !    call mpas_timer_stop('atm_advance_vsplit_scalars_mono')
-        ! end if
-
-     ! end do  ! rk_step
-
+      call mpas_timer_start('atm_advance_vsplit_scalars')
+      call atm_advance_vsplit_scalars(field_name, state, diag, tend, mesh, block % configs, rk_timestep, &
+			     cellSolveStart, cellSolveEnd, & 
+			     config_monotonic, config_positive_definite, &
+			     config_time_integration_order, &
+			     advance_density=config_split_dynamics_transport)
+      call mpas_timer_stop('atm_advance_vsplit_scalars')
 
    end subroutine advance_vsplit_scalars
 
@@ -1881,30 +1867,23 @@ module atm_time_integration
    !
    !
    !-----------------------------------------------------------------------
-   subroutine save_updated_split_scalars(state, diag, cellStart, cellEnd, exchange_halo_group ) 
+   subroutine save_updated_split_scalars(state, tend, cellStart, cellEnd, exchange_halo_group ) 
       implicit none
 
       ! Arguments
       procedure (halo_exchange_routine) :: exchange_halo_group
       type (mpas_pool_type), intent(inout) :: state
-      type (mpas_pool_type), intent(in)    :: diag
+      type (mpas_pool_type), intent(in)    :: tend 
       integer, intent(in) :: cellStart, cellEnd
 
       
       real (kind=RKIND), dimension(:,:,:), pointer :: scalars_save 
       real (kind=RKIND), dimension(:,:,:), pointer :: scalars_2 
 
-      call mpas_pool_get_array(diag,  'scalars_save', scalars_save)
+      call mpas_pool_get_array(tend,  'scalars_tend', scalars_save)
       call mpas_pool_get_array(state, 'scalars'     , scalars_2, 2 )
 
       scalars_save(:,:,cellStart:cellEnd) = scalars_2(:,:,cellStart:cellEnd)
-
-!$OMP BARRIER
-!$OMP MASTER
-      call exchange_halo_group(block % domain, 'dynamics:scalars_save')
-!$OMP END MASTER
-!$OMP BARRIER
-
 
    end subroutine save_updated_split_scalars 
 
@@ -3226,7 +3205,7 @@ module atm_time_integration
    !>  to the work routine
    !
    !-----------------------------------------------------------------------
-   subroutine atm_advance_hsplit_scalars(field_name, state, diag, mesh, configs, dt, &
+   subroutine atm_advance_hsplit_scalars(field_name, state, diag, tend, mesh, configs, dt, &
                                   edgeStart, edgeEnd, &
                                   cellSolveStart, cellSolveEnd, &
                                   horiz_flux_arr, rk_step, config_time_integration_order, advance_density)
@@ -3237,6 +3216,7 @@ module atm_time_integration
       character(len=*), intent(in) :: field_name
       type (mpas_pool_type), intent(inout) :: state
       type (mpas_pool_type), intent(in) :: diag
+      type (mpas_pool_type), intent(in) :: tend 
       type (mpas_pool_type), intent(in) :: mesh
       type (mpas_pool_type), intent(in) :: configs
       integer, intent(in) :: rk_step    !  rk substep we are integrating
@@ -3277,7 +3257,7 @@ module atm_time_integration
       end if
 
       !call mpas_pool_get_array(state, trim(field_name), scalar_old, 1)   ! using split-saved scalars field to start
-      call mpas_pool_get_array(diag,  trim(field_name) // '_save', scalar_old ) !in split-transport, start from updated split-transport scalar values
+      call mpas_pool_get_array(tend,  trim(field_name) // '_tend', scalar_old ) !in split-transport, start from updated split-transport scalar values
       call mpas_pool_get_array(state, trim(field_name), scalar_new, 2)
       !call mpas_pool_get_array(state, 'rho_zz', rho_zz_old, 1)
       call mpas_pool_get_array(diag,  'rho_zz_int', rho_zz_old ) ! using split-saved density field to start
@@ -3562,7 +3542,7 @@ module atm_time_integration
    !>  to the work routine.
    !
    !-----------------------------------------------------------------------
-   subroutine atm_advance_vsplit_scalars(field_name, state, diag, mesh, configs, dt, &
+   subroutine atm_advance_vsplit_scalars(field_name, state, diag, tend, mesh, configs, dt, &
                                   cellSolveStart, cellSolveEnd, &
 				  config_monotonic, config_positive_definite, &
                                   config_time_integration_order, advance_density)
@@ -3573,6 +3553,7 @@ module atm_time_integration
       character(len=*), intent(in) :: field_name
       type (mpas_pool_type), intent(inout) :: state
       type (mpas_pool_type), intent(in) :: diag
+      type (mpas_pool_type), intent(in) :: tend 
       type (mpas_pool_type), intent(in) :: mesh
       type (mpas_pool_type), intent(in) :: configs
       integer, intent(in) :: config_time_integration_order  ! time integration order
@@ -3608,7 +3589,7 @@ module atm_time_integration
 
       call mpas_pool_get_config(configs, 'config_coef_3rd_order', coef_3rd_order)
 
-      call mpas_pool_get_array(diag,  trim(field_name)//'_save', scalars_old)   ! in split-transport, start from updated split-transport scalar values
+      call mpas_pool_get_array(tend,  trim(field_name)//'_tend', scalars_old)   ! in split-transport, start from updated split-transport scalar values
       call mpas_pool_get_array(state, trim(field_name), scalars_new,       2)
 
       call mpas_pool_get_array(diag, 'wwAvg', wwAvg)
@@ -4170,7 +4151,7 @@ module atm_time_integration
    !>  to the work routine.
    !
    !-----------------------------------------------------------------------
-   subroutine atm_advance_hsplit_scalars_mono(field_name, block, state, diag, mesh, halo_scratch, configs, dt, &
+   subroutine atm_advance_hsplit_scalars_mono(field_name, block, state, diag, tend, mesh, halo_scratch, configs, dt, &
                                        cellStart, cellEnd, edgeStart, edgeEnd, &
                                        cellSolveStart, cellSolveEnd, &
                                        scalar_old, scalar_new, s_max, s_min, flux_arr, &
@@ -4183,6 +4164,7 @@ module atm_time_integration
       type (block_type), intent(inout), target :: block
       type (mpas_pool_type), intent(inout) :: state
       type (mpas_pool_type), intent(in)    :: diag
+      type (mpas_pool_type), intent(in)    :: tend 
       type (mpas_pool_type), intent(in)    :: mesh
       type (mpas_pool_type), intent(in)    :: halo_scratch
       type (mpas_pool_type), intent(in)    :: configs
@@ -4234,7 +4216,7 @@ module atm_time_integration
       call mpas_pool_get_array(state, 'rho_zz', rho_zz_old, 1)   ! placeholder/dummy variable - not actually used
       call mpas_pool_get_array(state, 'rho_zz', rho_zz_new, 2)
       !call mpas_pool_get_array(state, trim(field_name), scalars_old, 1)
-      call mpas_pool_get_array(diag, trim(field_name) // '_save', scalars_old )
+      call mpas_pool_get_array(tend, trim(field_name) // '_tend', scalars_old )
       call mpas_pool_get_array(state, trim(field_name), scalars_new, 2)
 
       call mpas_pool_get_array(mesh, 'invAreaCell', invAreaCell)
